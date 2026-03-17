@@ -4,18 +4,12 @@ WORKDIR /build
 COPY Cargo.toml ./Cargo.toml
 COPY core/Cargo.toml ./core/Cargo.toml
 COPY crate/Cargo.toml ./crate/Cargo.toml
-COPY wasi/Cargo.toml ./wasi/Cargo.toml
-COPY js/Cargo.toml ./js/Cargo.toml
-COPY php/Cargo.toml ./php/Cargo.toml
 COPY crate/examples/app/Cargo.toml ./crate/examples/app/Cargo.toml
 
-RUN mkdir -p core/src crate/src wasi/src js/src php/src \
+RUN mkdir -p core/src crate/src \
              crate/examples/adapters crate/examples/app/src && \
     echo "pub fn placeholder() {}" > core/src/lib.rs && \
     echo "pub fn placeholder() {}" > crate/src/lib.rs && \
-    echo "pub fn placeholder() {}" > wasi/src/lib.rs && \
-    echo "pub fn placeholder() {}" > js/src/lib.rs && \
-    echo "pub fn placeholder() {}" > php/src/lib.rs && \
     touch crate/examples/adapters/mod.rs && \
     touch crate/examples/adapters/in_memory.rs && \
     touch crate/examples/adapters/env_client.rs && \
@@ -26,7 +20,7 @@ RUN mkdir -p core/src crate/src wasi/src js/src php/src \
     touch crate/examples/app/src/adapters.rs && \
     cargo build --release --features state-engine/logging \
         --manifest-path crate/examples/app/Cargo.toml ; \
-    rm -rf core/src crate/src wasi/src js/src php/src \
+    rm -rf core/src crate/src \
            crate/examples/adapters crate/examples/app/src && \
     rm -rf target/release/.fingerprint/state-engine-* \
            target/release/.fingerprint/core-* \
@@ -37,9 +31,6 @@ RUN mkdir -p core/src crate/src wasi/src js/src php/src \
 
 COPY core/ ./core/
 COPY crate/src/ ./crate/src/
-COPY wasi/src/ ./wasi/src/
-COPY js/src/ ./js/src/
-COPY php/src/ ./php/src/
 COPY crate/examples/adapters/ ./crate/examples/adapters/
 COPY crate/examples/app/src/ ./crate/examples/app/src/
 RUN cargo build --release --features state-engine/logging \
