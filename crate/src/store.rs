@@ -1,32 +1,38 @@
-use crate::ports::required::{InMemoryClient, KVSClient};
-use crate::common::fixed_bits;
+use crate::ports::required::{InMemoryClient, KVSClient, HttpClient};
+use core::fixed_bits;
 use serde_json::Value;
 use std::collections::HashMap;
 
 pub struct Store<'a> {
-    in_memory: Option<&'a mut dyn InMemoryClient>,
-    kvs_client: Option<&'a mut dyn KVSClient>,
+    in_memory: Option<&'a dyn InMemoryClient>,
+    kvs: Option<&'a dyn KVSClient>,
+    http: Option<&'a dyn HttpClient>,
 }
 
 impl<'a> Store<'a> {
     pub fn new() -> Self {
         Self {
             in_memory: None,
-            kvs_client: None,
+            kvs: None,
+            http: None,
         }
     }
 
-    pub fn with_in_memory(mut self, client: &'a mut dyn InMemoryClient) -> Self {
+    pub fn with_in_memory(mut self, client: &'a dyn InMemoryClient) -> Self {
         self.in_memory = Some(client);
         self
     }
 
-    pub fn with_kvs_client(mut self, client: &'a mut dyn KVSClient) -> Self {
-        self.kvs_client = Some(client);
+    pub fn with_kvs(mut self, client: &'a dyn KVSClient) -> Self {
+        self.kvs = Some(client);
         self
     }
 
-    /// Get value from store based on store_config
+    pub fn with_http(mut self, client: &'a dyn HttpClient) -> Self {
+        self.http = Some(client);
+        self
+    }
+
     pub fn get(&self, store_config: &HashMap<String, Value>) -> Option<Value> {
         let client = store_config.get("client")?.as_u64()?;
 
@@ -37,20 +43,28 @@ impl<'a> Store<'a> {
                 in_memory.get(key)
             }
             fixed_bits::CLIENT_KVS => {
-                let kvs_client = self.kvs_client.as_ref()?;
+                let kvs = self.kvs.as_ref()?;
                 let key = store_config.get("key")?.as_str()?;
-                let value_str = kvs_client.get(key)?;
-
-                // deserialize
+                let value_str = kvs.get(key)?;
                 serde_json::from_str(&value_str).ok()
+            }
+            fixed_bits::CLIENT_HTTP => {
+                let http = self.http.as_ref()?;
+                let url = store_config.get("url")?.as_str()?;
+                let headers = store_config
+                    .get("headers")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect::<HashMap<String, String>>());
+                http.get(url, headers.as_ref())
             }
             _ => None,
         }
     }
 
-    /// Set value to store based on store_config
     pub fn set(
-        &mut self,
+        &self,
         store_config: &HashMap<String, Value>,
         value: Value,
         ttl: Option<u64>,
@@ -62,29 +76,40 @@ impl<'a> Store<'a> {
 
         match client {
             fixed_bits::CLIENT_IN_MEMORY => {
-                let in_memory = self.in_memory.as_mut()
+                let in_memory = self.in_memory.as_ref()
                     .ok_or_else(|| "Store::set: InMemoryClient not configured".to_string())?;
                 let key = store_config.get("key").and_then(|v| v.as_str())
                     .ok_or_else(|| "Store::set: 'key' not found in store config".to_string())?;
-                in_memory.set(key, value);
-                Ok(true)
+                Ok(in_memory.set(key, value))
             }
             fixed_bits::CLIENT_KVS => {
-                let kvs_client = self.kvs_client.as_mut()
+                let kvs = self.kvs.as_ref()
                     .ok_or_else(|| "Store::set: KVSClient not configured".to_string())?;
                 let key = store_config.get("key").and_then(|v| v.as_str())
                     .ok_or_else(|| "Store::set: 'key' not found in store config".to_string())?;
                 let serialized = serde_json::to_string(&value)
                     .map_err(|e| format!("Store::set: JSON serialize error: {}", e))?;
                 let final_ttl = ttl.or_else(|| store_config.get("ttl").and_then(|v| v.as_u64()));
-                Ok(kvs_client.set(key, serialized, final_ttl))
+                Ok(kvs.set(key, serialized, final_ttl))
+            }
+            fixed_bits::CLIENT_HTTP => {
+                let http = self.http.as_ref()
+                    .ok_or_else(|| "Store::set: HttpClient not configured".to_string())?;
+                let url = store_config.get("url").and_then(|v| v.as_str())
+                    .ok_or_else(|| "Store::set: 'url' not found in store config".to_string())?;
+                let headers = store_config
+                    .get("headers")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect::<HashMap<String, String>>());
+                Ok(http.set(url, value, headers.as_ref()))
             }
             _ => Err(format!("Store::set: unsupported client '{}'", client)),
         }
     }
 
-    /// Delete value from store based on store_config
-    pub fn delete(&mut self, store_config: &HashMap<String, Value>) -> Result<bool, String> {
+    pub fn delete(&self, store_config: &HashMap<String, Value>) -> Result<bool, String> {
         let client = store_config
             .get("client")
             .and_then(|v| v.as_u64())
@@ -92,18 +117,31 @@ impl<'a> Store<'a> {
 
         match client {
             fixed_bits::CLIENT_IN_MEMORY => {
-                let in_memory = self.in_memory.as_mut()
+                let in_memory = self.in_memory.as_ref()
                     .ok_or_else(|| "Store::delete: InMemoryClient not configured".to_string())?;
                 let key = store_config.get("key").and_then(|v| v.as_str())
                     .ok_or_else(|| "Store::delete: 'key' not found in store config".to_string())?;
                 Ok(in_memory.delete(key))
             }
             fixed_bits::CLIENT_KVS => {
-                let kvs_client = self.kvs_client.as_mut()
+                let kvs = self.kvs.as_ref()
                     .ok_or_else(|| "Store::delete: KVSClient not configured".to_string())?;
                 let key = store_config.get("key").and_then(|v| v.as_str())
                     .ok_or_else(|| "Store::delete: 'key' not found in store config".to_string())?;
-                Ok(kvs_client.delete(key))
+                Ok(kvs.delete(key))
+            }
+            fixed_bits::CLIENT_HTTP => {
+                let http = self.http.as_ref()
+                    .ok_or_else(|| "Store::delete: HttpClient not configured".to_string())?;
+                let url = store_config.get("url").and_then(|v| v.as_str())
+                    .ok_or_else(|| "Store::delete: 'url' not found in store config".to_string())?;
+                let headers = store_config
+                    .get("headers")
+                    .and_then(|v| v.as_object())
+                    .map(|obj| obj.iter()
+                        .filter_map(|(k, v)| v.as_str().map(|s| (k.clone(), s.to_string())))
+                        .collect::<HashMap<String, String>>());
+                Ok(http.delete(url, headers.as_ref()))
             }
             _ => Err(format!("Store::delete: unsupported client '{}'", client)),
         }

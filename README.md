@@ -16,7 +16,7 @@ It behaves as described in YAML DSL.
 |---------|---------|------|-------------|
 | 0.1   | Released  | 2026-2-12 | initial | 
 | 0.1.3 | Current   | 2026-2-26 | improve #32 | 
-| 0.1.4 | Scheduled | 2026-3-22  | improve #37 | 
+| 0.1.4 | Scheduled | 2026-3-15  | improve #37 | 
 
 ## Provided Functions
 
@@ -99,11 +99,13 @@ user:
 | Interface | expected store | fn | sample |
 |-----------|----------------|-----|--------|
 | `InMemoryClient` | Local Process Memory | `get()` / `set()` / `delete()` | [InMemoryAdapter](./examples/adapters/in_memory.rs) |
-| `KVSClient` | Key-Vlue Store | `get()` / `set()` / `delete()` | [KVSAdapter](./examples/adapters/kvs_client.rs) |
-| `DbClient` | SQL Database | `fetch()` | [DbAdapter](./examples/adapters/db_client.rs) |
-| `EnvClient` | Environment Variables |  `get()` | [EnvAdapter](./examples/adapters/env_client.rs) |
+| `EnvClient` | Environment Variables |  as above | [EnvAdapter](./examples/adapters/env_client.rs) |
+| `KVSClient` | Key-Vlue Store | as above | [KVSAdapter](./examples/adapters/kvs_client.rs) |
+| `DbClient` | SQL Database | as above | [DbAdapter](./examples/adapters/db_client.rs) |
+| `HttpClient` | Http Request | as above | [HttpAdapter](./examples/adapters/http_client.rs) |
+| `FileClient` | File I/O | as above | [DefaultFileClient](./src/ports/default.rs) |
 
-- "Db" and "Env" will be used only in Loading(Read).
+- FileClient.get is always used by Manifest to read YAMLs.
 - It's not essential to implement all *Client.
 
 3. Initialize State with your adapters and use it.
@@ -153,7 +155,7 @@ Full working example: [examples/app/src/main.rs](./examples/app/src/main.rs)
 ┌─────────────────────────────────────┐
 │    Required Ports (App Adapters)    │
 ├─────────────────────────────────────┤
-│    InMemory, Env, KVS, Db clients   │
+│    InMemory, KVS, Http,... clients  │
 └─────────────────────────────────────┘
 ```
 
@@ -164,8 +166,9 @@ see for details [Architecture.md](./docs/en/Architecture.md)
 ```
 ./
   README.md           # this file
-  Cargo.toml
-  docs/               # guide documents
+  Cargo.toml          # workspace
+
+  docs/               # guides
     en/
       Architecture.md
       YAML-guide.md
@@ -173,25 +176,14 @@ see for details [Architecture.md](./docs/en/Architecture.md)
       README.md
       Architecture.md
       YAML-guide.md
-  core/
-    Cargo.toml
-    src/
-      common/           # library common mod
-        fix_bits.rs
-        pool.rs
-        parser.rs
-        log_format.rs
-  crate/
-    Cargo.toml
-    src/
-      ports/            # library external interface traits
-        provided.rs     # library provides
-        required.rs     # Library requires
-        manifest.rs       # Manifest impl
-        state.rs          # State impl
-        store.rs          # Store internal mod
-        load.rs           # Load internal mod
 
+  core/                 # pure logic module
+    Cargo.toml
+    src/
+
+  crate/                # for native application
+    Cargo.toml
+    src/
     examples/
       manifest/         # manifest YAML examples
         connection.yml  # sample 1

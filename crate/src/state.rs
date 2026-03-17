@@ -1,7 +1,8 @@
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use crate::manifest::Manifest;
-use crate::common::fixed_bits;
+use core::fixed_bits;
+use core::codec;
 use crate::store::Store;
 use crate::load::Load;
 use crate::ports::provided::StateError;
@@ -19,37 +20,60 @@ pub struct State<'a> {
 }
 
 impl<'a> State<'a> {
-    /// Creates a new State with the given manifest directory and load handler.
+    /// Creates a new State with the given manifest directory.
     ///
     /// # Examples
     ///
     /// ```
     /// use state_engine::State;
-    /// use state_engine::load::Load;
     ///
-    /// let state = State::new("./examples/manifest", Load::new());
+    /// let state = State::new("./examples/manifest");
     /// ```
-    pub fn new(manifest_dir: &str, load: Load<'a>) -> Self {
+    pub fn new(manifest_dir: &str) -> Self {
         Self {
             manifest: Manifest::new(manifest_dir),
             state_keys: vec![0],
             state_vals: vec![Value::Null],
             store: Store::new(),
-            load,
+            load: Load::new(),
             max_recursion: 20,
             called_keys: HashSet::new(),
         }
     }
 
-    pub fn with_in_memory(mut self, client: &'a mut dyn crate::ports::required::InMemoryClient) -> Self {
+    pub fn with_in_memory(mut self, client: &'a dyn crate::ports::required::InMemoryClient) -> Self {
         self.store = self.store.with_in_memory(client);
+        self.load = self.load.with_in_memory(client);
         self
     }
 
-    pub fn with_kvs_client(mut self, client: &'a mut dyn crate::ports::required::KVSClient) -> Self {
-        self.store = self.store.with_kvs_client(client);
+    pub fn with_kvs(mut self, client: &'a dyn crate::ports::required::KVSClient) -> Self {
+        self.store = self.store.with_kvs(client);
+        self.load = self.load.with_kvs(client);
         self
     }
+
+    pub fn with_db(mut self, client: &'a dyn crate::ports::required::DbClient) -> Self {
+        self.load = self.load.with_db(client);
+        self
+    }
+
+    pub fn with_env(mut self, client: &'a dyn crate::ports::required::EnvClient) -> Self {
+        self.load = self.load.with_env(client);
+        self
+    }
+
+    pub fn with_http(mut self, client: &'a dyn crate::ports::required::HttpClient) -> Self {
+        self.store = self.store.with_http(client);
+        self.load = self.load.with_http(client);
+        self
+    }
+
+    pub fn with_file(mut self, client: impl crate::ports::required::FileClient + 'static) -> Self {
+        self.manifest = self.manifest.with_file(client);
+        self
+    }
+
 
     /// Splits "file.path" into ("file", "path").
     fn split_key<'k>(key: &'k str) -> (&'k str, &'k str) {
@@ -194,14 +218,9 @@ impl<'a> State<'a> {
                 continue;
             }
 
-            let prop_name = match prop as u64 {
-                fixed_bits::PROP_KEY        => "key",
-                fixed_bits::PROP_CONNECTION => "connection",
-                fixed_bits::PROP_MAP        => "map",
-                fixed_bits::PROP_TTL        => "ttl",
-                fixed_bits::PROP_TABLE      => "table",
-                fixed_bits::PROP_WHERE      => "where",
-                _ => continue,
+            let prop_name = match codec::prop_decode(prop as u64) {
+                Some(name) => name,
+                None => continue,
             };
 
             if prop_name == "map" {
@@ -275,21 +294,20 @@ impl<'a> State<'a> {
     ///
     /// ```
     /// use state_engine::State;
-    /// use state_engine::load::Load;
     /// use state_engine::InMemoryClient;
     /// use serde_json::{json, Value};
     ///
-    /// struct MockInMemory { data: std::collections::HashMap<String, Value> }
+    /// struct MockInMemory { data: std::sync::Mutex<std::collections::HashMap<String, Value>> }
     /// impl MockInMemory { fn new() -> Self { Self { data: Default::default() } } }
     /// impl InMemoryClient for MockInMemory {
-    ///     fn get(&self, key: &str) -> Option<Value> { self.data.get(key).cloned() }
-    ///     fn set(&mut self, key: &str, value: Value) { self.data.insert(key.to_string(), value); }
-    ///     fn delete(&mut self, key: &str) -> bool { self.data.remove(key).is_some() }
+    ///     fn get(&self, key: &str) -> Option<Value> { self.data.lock().unwrap().get(key).cloned() }
+    ///     fn set(&self, key: &str, value: Value) -> bool { self.data.lock().unwrap().insert(key.to_string(), value); true }
+    ///     fn delete(&self, key: &str) -> bool { self.data.lock().unwrap().remove(key).is_some() }
     /// }
     ///
-    /// let mut client = MockInMemory::new();
-    /// let mut state = State::new("./examples/manifest", Load::new())
-    ///     .with_in_memory(&mut client);
+    /// let client = MockInMemory::new();
+    /// let mut state = State::new("./examples/manifest")
+    ///     .with_in_memory(&client);
     ///
     /// // set then get
     /// state.set("connection.common", json!({"host": "localhost"}), None).unwrap();
@@ -419,19 +437,18 @@ impl<'a> State<'a> {
     ///
     /// ```
     /// # use state_engine::State;
-    /// # use state_engine::load::Load;
     /// # use state_engine::InMemoryClient;
     /// # use serde_json::{json, Value};
-    /// # struct MockInMemory { data: std::collections::HashMap<String, Value> }
+    /// # struct MockInMemory { data: std::sync::Mutex<std::collections::HashMap<String, Value>> }
     /// # impl MockInMemory { fn new() -> Self { Self { data: Default::default() } } }
     /// # impl InMemoryClient for MockInMemory {
-    /// #     fn get(&self, key: &str) -> Option<Value> { self.data.get(key).cloned() }
-    /// #     fn set(&mut self, key: &str, value: Value) { self.data.insert(key.to_string(), value); }
-    /// #     fn delete(&mut self, key: &str) -> bool { self.data.remove(key).is_some() }
+    /// #     fn get(&self, key: &str) -> Option<Value> { self.data.lock().unwrap().get(key).cloned() }
+    /// #     fn set(&self, key: &str, value: Value) -> bool { self.data.lock().unwrap().insert(key.to_string(), value); true }
+    /// #     fn delete(&self, key: &str) -> bool { self.data.lock().unwrap().remove(key).is_some() }
     /// # }
-    /// let mut client = MockInMemory::new();
-    /// let mut state = State::new("./examples/manifest", Load::new())
-    ///     .with_in_memory(&mut client);
+    /// let client = MockInMemory::new();
+    /// let mut state = State::new("./examples/manifest")
+    ///     .with_in_memory(&client);
     ///
     /// assert!(state.set("connection.common", json!({"host": "localhost"}), None).unwrap());
     /// ```
@@ -482,19 +499,18 @@ impl<'a> State<'a> {
     ///
     /// ```
     /// # use state_engine::State;
-    /// # use state_engine::load::Load;
     /// # use state_engine::InMemoryClient;
     /// # use serde_json::{json, Value};
-    /// # struct MockInMemory { data: std::collections::HashMap<String, Value> }
+    /// # struct MockInMemory { data: std::sync::Mutex<std::collections::HashMap<String, Value>> }
     /// # impl MockInMemory { fn new() -> Self { Self { data: Default::default() } } }
     /// # impl InMemoryClient for MockInMemory {
-    /// #     fn get(&self, key: &str) -> Option<Value> { self.data.get(key).cloned() }
-    /// #     fn set(&mut self, key: &str, value: Value) { self.data.insert(key.to_string(), value); }
-    /// #     fn delete(&mut self, key: &str) -> bool { self.data.remove(key).is_some() }
+    /// #     fn get(&self, key: &str) -> Option<Value> { self.data.lock().unwrap().get(key).cloned() }
+    /// #     fn set(&self, key: &str, value: Value) -> bool { self.data.lock().unwrap().insert(key.to_string(), value); true }
+    /// #     fn delete(&self, key: &str) -> bool { self.data.lock().unwrap().remove(key).is_some() }
     /// # }
-    /// let mut client = MockInMemory::new();
-    /// let mut state = State::new("./examples/manifest", Load::new())
-    ///     .with_in_memory(&mut client);
+    /// let client = MockInMemory::new();
+    /// let mut state = State::new("./examples/manifest")
+    ///     .with_in_memory(&client);
     ///
     /// state.set("connection.common", json!({"host": "localhost"}), None).unwrap();
     /// assert!(state.delete("connection.common").unwrap());
@@ -547,19 +563,18 @@ impl<'a> State<'a> {
     ///
     /// ```
     /// # use state_engine::State;
-    /// # use state_engine::load::Load;
     /// # use state_engine::InMemoryClient;
     /// # use serde_json::{json, Value};
-    /// # struct MockInMemory { data: std::collections::HashMap<String, Value> }
+    /// # struct MockInMemory { data: std::sync::Mutex<std::collections::HashMap<String, Value>> }
     /// # impl MockInMemory { fn new() -> Self { Self { data: Default::default() } } }
     /// # impl InMemoryClient for MockInMemory {
-    /// #     fn get(&self, key: &str) -> Option<Value> { self.data.get(key).cloned() }
-    /// #     fn set(&mut self, key: &str, value: Value) { self.data.insert(key.to_string(), value); }
-    /// #     fn delete(&mut self, key: &str) -> bool { self.data.remove(key).is_some() }
+    /// #     fn get(&self, key: &str) -> Option<Value> { self.data.lock().unwrap().get(key).cloned() }
+    /// #     fn set(&self, key: &str, value: Value) -> bool { self.data.lock().unwrap().insert(key.to_string(), value); true }
+    /// #     fn delete(&self, key: &str) -> bool { self.data.lock().unwrap().remove(key).is_some() }
     /// # }
-    /// let mut client = MockInMemory::new();
-    /// let mut state = State::new("./examples/manifest", Load::new())
-    ///     .with_in_memory(&mut client);
+    /// let client = MockInMemory::new();
+    /// let mut state = State::new("./examples/manifest")
+    ///     .with_in_memory(&client);
     ///
     /// assert!(!state.exists("connection.common").unwrap());
     /// state.set("connection.common", json!({"host": "localhost"}), None).unwrap();
@@ -591,5 +606,63 @@ impl<'a> State<'a> {
             }
         }
         Ok(false)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ports::required::{KVSClient, DbClient, EnvClient, FileClient};
+    use serde_json::Value;
+    use std::collections::HashMap;
+
+    struct StubKVS;
+    impl KVSClient for StubKVS {
+        fn get(&self, _: &str) -> Option<String> { None }
+        fn set(&self, _: &str, _: String, _: Option<u64>) -> bool { false }
+        fn delete(&self, _: &str) -> bool { false }
+    }
+
+    struct StubDb;
+    impl DbClient for StubDb {
+        fn get(&self, _: &Value, _: &str, _: &[&str], _: Option<&str>) -> Option<Vec<HashMap<String, Value>>> { None }
+        fn set(&self, _: &Value, _: &str, _: &HashMap<String, Value>, _: Option<&str>) -> bool { false }
+        fn delete(&self, _: &Value, _: &str, _: Option<&str>) -> bool { false }
+    }
+
+    struct StubEnv;
+    impl EnvClient for StubEnv {
+        fn get(&self, _: &str) -> Option<String> { None }
+        fn set(&self, _: &str, _: String) -> bool { false }
+        fn delete(&self, _: &str) -> bool { false }
+    }
+
+    struct StubFile;
+    impl FileClient for StubFile {
+        fn get(&self, _: &str) -> Option<String> { None }
+        fn set(&self, _: &str, _: String) -> bool { false }
+        fn delete(&self, _: &str) -> bool { false }
+    }
+
+    struct StubHttp;
+    impl crate::ports::required::HttpClient for StubHttp {
+        fn get(&self, _: &str, _: Option<&HashMap<String, String>>) -> Option<Value> { None }
+        fn set(&self, _: &str, _: Value, _: Option<&HashMap<String, String>>) -> bool { false }
+        fn delete(&self, _: &str, _: Option<&HashMap<String, String>>) -> bool { false }
+    }
+
+    #[test]
+    fn test_with_clients_build() {
+        let kvs  = StubKVS;
+        let db   = StubDb;
+        let env  = StubEnv;
+        let http = StubHttp;
+
+        // each builder returns Self without panic — wiring is correct
+        let _ = State::new("./examples/manifest").with_kvs(&kvs);
+        let _ = State::new("./examples/manifest").with_db(&db);
+        let _ = State::new("./examples/manifest").with_env(&env);
+        let _ = State::new("./examples/manifest").with_http(&http);
+        let _ = State::new("./examples/manifest").with_file(StubFile);
     }
 }

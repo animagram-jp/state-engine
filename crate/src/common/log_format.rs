@@ -2,7 +2,7 @@ use serde_json::Value;
 
 /// # Examples
 /// ```
-/// use state_engine::common::log_format::LogFormat;
+/// use state_engine::common::LogFormat;
 ///
 /// let fn_message = LogFormat::call("State", "get", &["'key'".to_string()]);
 /// assert_eq!(fn_message, "State::get('key')");
@@ -10,7 +10,6 @@ use serde_json::Value;
 pub struct LogFormat;
 
 impl LogFormat {
-
     pub fn call(class: &str, fn_name: &str, args: &[String]) -> String {
         let args_str = args.join(", ");
         format!("{}::{}({})", class, fn_name, args_str)
@@ -20,7 +19,7 @@ impl LogFormat {
     ///
     /// # Examples
     /// ```
-    /// use state_engine::common::log_format::LogFormat;
+    /// use state_engine::common::LogFormat;
     /// use serde_json::json;
     ///
     /// assert_eq!(LogFormat::format_arg(&json!("text")), "'text'");
@@ -34,26 +33,12 @@ impl LogFormat {
     /// ```
     pub fn format_arg(value: &Value) -> String {
         match value {
-            Value::String(s) if s.len() > 50 => {
-                format!("'{}'...", &s[..47])
-            }
-            Value::String(s) => {
-                format!("'{}'", s)
-            }
-            Value::Array(arr) => {
-                if arr.is_empty() {
-                    "[]".to_string()
-                } else {
-                    format!("[{} items]", arr.len())
-                }
-            }
-            Value::Object(obj) => {
-                if obj.is_empty() {
-                    "{}".to_string()
-                } else {
-                    format!("{{{} fields}}", obj.len())
-                }
-            }
+            Value::String(s) if s.len() > 50 => format!("'{}'...", &s[..47]),
+            Value::String(s) => format!("'{}'", s),
+            Value::Array(arr) if arr.is_empty() => "[]".to_string(),
+            Value::Array(arr) => format!("[{} items]", arr.len()),
+            Value::Object(obj) if obj.is_empty() => "{}".to_string(),
+            Value::Object(obj) => format!("{{{} fields}}", obj.len()),
             Value::Null => "null".to_string(),
             Value::Bool(b) => b.to_string(),
             Value::Number(n) => n.to_string(),
@@ -64,7 +49,7 @@ impl LogFormat {
     ///
     /// # Examples
     /// ```
-    /// use state_engine::common::log_format::LogFormat;
+    /// use state_engine::common::LogFormat;
     ///
     /// assert_eq!(LogFormat::format_str_arg("key"), "'key'");
     /// ```
@@ -93,14 +78,13 @@ macro_rules! fn_log {
         {
             let args: Vec<String> = vec![
                 $(
-                    $crate::common::log_format::LogFormat::format_str_arg($arg),
+                    $crate::common::LogFormat::format_str_arg($arg),
                 )*
             ];
-            log::debug!("{}", $crate::common::log_format::LogFormat::call($class, $fun, &args));
+            log::debug!("{}", $crate::common::LogFormat::call($class, $fun, &args));
         }
     }};
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -122,7 +106,7 @@ mod tests {
         let result = LogFormat::format_arg(&json!(long_str));
         assert!(result.starts_with("'aaa"));
         assert!(result.ends_with("'..."));
-        assert_eq!(result.len(), 52); // ' + 47 chars + '...
+        assert_eq!(result.len(), 52);
     }
 
     #[test]

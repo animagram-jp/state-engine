@@ -1,10 +1,10 @@
 use std::collections::HashMap;
-use std::fs;
 use std::path::PathBuf;
-use crate::common::parser::{ParsedManifest, parse};
-use crate::common::pool::DynamicPool;
-use crate::common::fixed_bits;
+use core::parser::{ParsedManifest, Value, parse};
+use core::pool::DynamicPool;
+use core::fixed_bits;
 use crate::ports::provided::ManifestError;
+use crate::ports::required::FileClient;
 
 /// Indices of meta records for a given node, collected from root to node (child overrides parent).
 #[derive(Debug, Default)]
@@ -28,6 +28,7 @@ pub struct MetaIndices {
 /// ```
 pub struct Manifest {
     manifest_dir: PathBuf,
+    file: Box<dyn FileClient>,
     files: HashMap<String, ParsedManifest>,
     pub dynamic: DynamicPool,
     pub keys: Vec<u64>,
@@ -40,6 +41,7 @@ impl Manifest {
     pub fn new(manifest_dir: &str) -> Self {
         Self {
             manifest_dir: PathBuf::from(manifest_dir),
+            file: Box::new(crate::ports::default::DefaultFileClient),
             files: HashMap::new(),
             dynamic: DynamicPool::new(),
             keys: vec![0],
@@ -47,6 +49,33 @@ impl Manifest {
             path_map: vec![vec![]],
             children_map: vec![vec![]],
         }
+    }
+
+    /// Replaces the default FileClient. Useful for WASI/JS environments without std::fs.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use state_engine::{Manifest, FileClient};
+    ///
+    /// struct MockFile;
+    /// impl FileClient for MockFile {
+    ///     fn get(&self, path: &str) -> Option<String> {
+    ///         if path.ends_with("cache.yml") { Some("user:\n  id:\n    _state:\n      type: string\n".into()) }
+    ///         else { None }
+    ///     }
+    ///     fn set(&self, _: &str, _: String) -> bool { false }
+    ///     fn delete(&self, _: &str) -> bool { false }
+    /// }
+    ///
+    /// let mut m = Manifest::new("/any/path").with_file(MockFile);
+    /// assert!(m.load("cache").is_ok());
+    /// assert!(m.file_key_idx("cache").is_some());
+    /// assert!(m.file_key_idx("missing").is_none());
+    /// ```
+    pub fn with_file(mut self, client: impl FileClient + 'static) -> Self {
+        self.file = Box::new(client);
+        self
     }
 
     /// Loads and parses a manifest file by name (without extension) if not cached.
@@ -82,32 +111,29 @@ impl Manifest {
 
         let yml_path  = self.manifest_dir.join(format!("{}.yml", file));
         let yaml_path = self.manifest_dir.join(format!("{}.yaml", file));
-        let yml_exists  = yml_path.exists();
-        let yaml_exists = yaml_path.exists();
 
-        if yml_exists && yaml_exists {
-            return Err(ManifestError::AmbiguousFile(format!(
-                "both '{}.yml' and '{}.yaml' exist.",
-                file, file
-            )));
-        }
+        let yml_key  = yml_path.to_string_lossy();
+        let yaml_key = yaml_path.to_string_lossy();
+        let yml_content  = self.file.get(&yml_key);
+        let yaml_content = self.file.get(&yaml_key);
 
-        let path = if yml_exists {
-            yml_path
-        } else if yaml_exists {
-            yaml_path
-        } else {
-            return Err(ManifestError::FileNotFound(format!(
+        let content = match (yml_content, yaml_content) {
+            (Some(_), Some(_)) => return Err(ManifestError::AmbiguousFile(format!(
+                "both '{}.yml' and '{}.yaml' exist.", file, file
+            ))),
+            (Some(c), None) => c,
+            (None, Some(c)) => c,
+            (None, None) => return Err(ManifestError::FileNotFound(format!(
                 "'{}.yml' or '{}.yaml'", file, file
-            )));
+            ))),
         };
 
-        let content = fs::read_to_string(&path)
-            .map_err(|e| ManifestError::ReadError(e.to_string()))?;
+        let yaml_root: serde_yaml_ng::Value = serde_yaml_ng::from_str(&content)
+            .map_err(|e| ManifestError::ParseError(format!("YAML parse error: {}", e)))?;
 
         let pm = parse(
             file,
-            &content,
+            yaml_to_value(yaml_root),
             &mut self.dynamic,
             &mut self.keys,
             &mut self.values,
@@ -344,5 +370,26 @@ impl Manifest {
         }
 
         result
+    }
+}
+
+fn yaml_to_value(v: serde_yaml_ng::Value) -> Value {
+    match v {
+        serde_yaml_ng::Value::Mapping(m) => Value::Mapping(
+            m.into_iter()
+                .filter_map(|(k, v)| {
+                    let key = match k {
+                        serde_yaml_ng::Value::String(s) => s,
+                        _ => return None,
+                    };
+                    Some((key, yaml_to_value(v)))
+                })
+                .collect(),
+        ),
+        serde_yaml_ng::Value::String(s) => Value::Scalar(s),
+        serde_yaml_ng::Value::Number(n) => Value::Scalar(n.to_string()),
+        serde_yaml_ng::Value::Bool(b)   => Value::Scalar(b.to_string()),
+        serde_yaml_ng::Value::Null      => Value::Null,
+        _                               => Value::Null,
     }
 }
